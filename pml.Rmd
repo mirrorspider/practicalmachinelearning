@@ -1,5 +1,5 @@
 ---
-title: "Practical Machine Learning"
+title: "Predicting Correct Weightlifting Form"
 author: "Alex Robinson"
 date: "30 January 2018"
 output: html_document
@@ -9,22 +9,156 @@ output: html_document
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
-## R Markdown
+## Summary 
 
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+Using data from the Human Activity Recognition project (http://groupware.les.inf.puc-rio.br/har) this exploration looks to predict
+whether a lift was performed correctly based on activity data.
 
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
-
-```{r cars}
-summary(cars)
+```{r setup_env, echo=FALSE, include=FALSE}
+require(caret)
+require(scales)
+require(ggpubr)
+# set the seed for reproducibility
+set.seed(1492)
 ```
 
-## Including Plots
+``` {r file_processing, echo=FALSE, cache = TRUE}
+training.data.file <- "./pml-training.csv"
+validation.data.file <- "./pml-testing.csv"
+if(!(file.exists(training.data.file) && file.exists(validation.data.file))){
+        knitr::knit_exit(append = "<h2>data file does not exist</h2><body></html>")
+}
 
-You can also embed plots, for example:
+training.all <- read.csv(training.data.file)
+# tidy up some typos in the names
+names(training.all) <- gsub("picth", "pitch", names(training.all))
+# validation data set is only for the final test/quiz
+validation <- read.csv(validation.data.file)
+names(validation) <- gsub("picth", "pitch", names(validation))
 
-```{r pressure, echo=FALSE}
-plot(pressure)
+```
+## Cross Validation
+
+80% of the data will be extracted for use in the exploratory analysis and
+initial model fitting.
+
+The remaining 20% will be used for testing the trained model with the
+reserved 20 test cases used as final validation.
+
+``` {r partition_data}
+inTrain <- createDataPartition(y=training.all$classe, p = 0.8, list = FALSE)
+# assign 80% of the data to training
+training <- training.all[inTrain,]
+testing <- training.all[-inTrain,]
+```
+## Exploratory Analysis
+
+Looking at the training data set it's worth setting some baselines for any 
+prediction algorithm.
+
+With 5 classes of movement (A-E) random guessing would have a 1 in 5 (20%) 
+chance of success. Always predicting that the movement was successfully 
+performed would improve this to 28% because there are a slightly higher 
+proportion of succesfully performed movements.
+
+Investigating further not all the telemetry values have complete information
+within the data frame but the yaw, pitch and roll values for the main sensors
+seem potentially interesting.
+
+``` {r exploratory_plot, cache = TRUE}
+ptn <- "^(roll|pitch|yaw)_(arm|belt|dumbbell|forearm)$"
+ptn_belt <- "^(roll|pitch|yaw)_belt$"
+# extract all column names for the pitch, yaw, roll telemetry for
+# the arm, belt, dumbbell and forearm sensors
+all_cols <- names(training)[grep(ptn, names(training))]
+# subset out the belt sensor telemetry for an example plot
+belt_cols <-  names(training)[grep(ptn_belt, names(training))]
+
+featurePlot(x = training[,belt_cols], y = training$classe, plot = "pairs",
+            auto.key = list(columns = 5))
 ```
 
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+Figure 1 - Pairwise plot of belt sensor telemetry
+
+Above is an example of a feature plot of a subset of data, already the
+pitch_belt telemetry seems helpful in identifying the "E" class of incorrect
+movements.
+
+## Fitting a Model and Prediction
+
+The challenge calls for classifying the telemetry readings into 1 of 5 outcomes,
+this seems to suggest that a classification and regression tree (CART) model
+may be best suited to the task.
+
+To improve accuracy a bootstrap aggregation (bagging) approach will be used.
+
+``` {r bagging, cache = TRUE}
+modelFit <- train(x = training[, all_cols], y = training$classe, 
+                  method = "treebag")
+```
+
+We can then use this model to explore the in sample and out of sample error with
+the training and test sets.
+
+``` {r sample_error}
+# in sample error predicting against training set
+predIn <- predict(modelFit, training)
+inSample <- percent(1 - mean(predIn == training$classe))
+# out of sample error, predicting against testing set
+predOut <- predict(modelFit, testing)
+outSample <- percent(1 - mean(predOut == testing$classe))
+# tabulation of whether prediction matches the training observed behaviour
+table(predIn == training$classe)
+# tabulation of whether prediction matches the TESTING observed behaviour
+table(predOut == testing$classe)
+```
+
+So the in sample error is `r inSample` and out of sample is
+`r outSample`.
+
+``` {r err_plotting, echo = FALSE}
+# pick out a subset of data for graphing
+graph1 <- data.frame(actual = training$classe, predicted = predIn, 
+                     matched = (training$classe == predIn))
+# create a factor variable of whether the data matches
+graph1$accurate <- factor(as.numeric(graph1$matched), levels = c(1, 0),
+                             labels = c("TRUE", "FALSE"))
+
+graph2 <- data.frame(actual = testing$classe, predicted = predOut, 
+                     matched = (testing$classe == predOut))
+graph2$accurate <- factor(as.numeric(graph2$matched), levels = c(1, 0),
+                             labels = c("TRUE", "FALSE"))
+# plot the 2 graphs 1 of training and 1 of testing
+plot1 <- ggplot(data = graph1, aes(predicted, actual))
+plot1 <- plot1 + geom_point(aes(colour = accurate), position = "jitter")
+plot1 <- plot1 + scale_colour_discrete(drop = FALSE)
+plot1 <- plot1 + theme_light()
+plot1 <- plot1 + ggtitle("Training set predictions")
+
+plot2 <- ggplot(data = graph2, aes(predicted, actual))
+plot2 <- plot2 + geom_point(aes(colour = accurate), position = "jitter")
+plot2 <- plot2 + scale_colour_discrete(drop = FALSE)
+plot2 <- plot2 + theme_light()
+plot2 <- plot2 + ggtitle("Testing set predictions")
+
+# plot the 2 graphs side by side using ggarrange from ggpubr
+ggarrange(plot1, plot2)
+```
+
+Figure 2 - Visualisation of prediction accuracy
+
+Clearly the prediction is somewhat overfitted to the training set but the 
+suggested out of sample error rate is low indicating a good model.
+
+## Validation
+
+The model having been trained and tested can now be applied to the validation
+set with some expectation of accuracy.
+
+```{r validation}
+# The model can now be applied to the 20 cases of the validation set
+predVal <- predict(modelFit, validation)
+# which gives the following predictions for submission
+predVal
+```
+
