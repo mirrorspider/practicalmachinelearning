@@ -14,6 +14,10 @@ knitr::opts_chunk$set(echo = TRUE)
 Using data from the Human Activity Recognition project (http://groupware.les.inf.puc-rio.br/har) this exploration looks to predict
 whether a lift was performed correctly based on activity data.
 
+A classification and regression tree (CART) model with bootstrap aggregation
+was found to be effective at correctly classifying lift outcome from
+sensor telemetry.
+
 ```{r setup_env, echo=FALSE, include=FALSE}
 require(caret)
 require(scales)
